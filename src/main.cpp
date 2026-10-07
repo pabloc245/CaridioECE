@@ -169,16 +169,16 @@ void setup()
   pinMode(pulsePin, INPUT);
   Serial.begin(9600);
 
+  if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, 0x3C, 0x3D)) {
+    oled.printStatus(Serial);
+    for (;;) delay(1000);
+  }
+
   rtc.Begin();
   rtc.SetIsWriteProtected(false);
   rtc.SetDateTime(RtcDateTime(2026, 1, 1, 12, 0, 0));
   rtc.SetIsRunning(true);
   displayTime = rtc.GetDateTime();
-
-  // if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, 0x3C, 0x3D)) {
-  //   Serial.println(F("Init DualSSD1306 échouée (câblage, adresses, RAM ?)"));
-  //   for (;;) delay(1000);
-  // }
 
   interruptSetup();
 }
@@ -212,7 +212,7 @@ void loop()
     }
 
     if (!oled.render(drawScreens)) {
-     // Serial.println(F("Erreur lors de l'affichage des écrans SSD1306"));
+      Serial.println(F("Erreur lors de l'affichage des écrans SSD1306"));
     }
   }
 }

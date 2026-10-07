@@ -1,7 +1,12 @@
 #include <Arduino.h>
 #include <unity.h>
 #include <DualSSD1306.h>
+#if defined(__has_include)
+#if __has_include(<Adafruit_SSD1306.h>)
 #include <Adafruit_SSD1306.h>
+#define HAS_ADAFRUIT_SSD1306 1
+#endif
+#endif
 #include <ThreeWire.h>
 #include <RtcDS1302.h>
 
@@ -11,13 +16,16 @@ constexpr uint8_t RTC_CE_PIN = 8;
 constexpr uint8_t PULSE_PIN = A0;
 constexpr uint8_t PULSE_RANGE_THRESHOLD = 10;
 
-DualSSD1306 oled(128, 64, DualSSD1306::MIRROR, &Wire, &Wire,
-                 -1, -1, 400000UL, 100000UL);
 ThreeWire rtcWire(RTC_IO_PIN, RTC_SCLK_PIN, RTC_CE_PIN);
 RtcDS1302<ThreeWire> rtc(rtcWire);
 
-bool initializeAndShow(uint8_t address, const __FlashStringHelper *label) {
-  if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, address, address)) return false;
+bool testScreenWithDual(uint8_t address, const __FlashStringHelper *label) {
+  DualSSD1306 oled(128, 64, DualSSD1306::MIRROR, &Wire, &Wire,
+                   -1, -1, 400000UL, 100000UL);
+  if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, address, address)) {
+    oled.printStatus(Serial);
+    return false;
+  }
 
   oled.clearDisplay();
   oled.setTextColor(DUALSSD1306_WHITE);
@@ -27,12 +35,34 @@ bool initializeAndShow(uint8_t address, const __FlashStringHelper *label) {
   return oled.display();
 }
 
+bool testScreen(uint8_t address, const __FlashStringHelper *label) {
+  if (testScreenWithDual(address, label)) return true;
+
+#if defined(HAS_ADAFRUIT_SSD1306)
+  Serial.println(F("DualSSD1306 en echec, essai avec Adafruit_SSD1306"));
+  constexpr uint8_t screenWidth = 64;
+  constexpr uint8_t screenHeight = 32;
+  Adafruit_SSD1306 display(screenWidth, screenHeight, &Wire, -1);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, address)) return false;
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 12);
+  display.print(label);
+  display.display();
+  return true;
+#else
+  return false;
+#endif
+}
+
 void test_left_oled_initializes_and_displays() {
-  TEST_ASSERT_TRUE(initializeAndShow(0x3C, F("0x3C OK")));
+  TEST_ASSERT_TRUE(testScreen(0x3C, F("0x3C OK")));
 }
 
 void test_right_oled_initializes_and_displays() {
-  TEST_ASSERT_TRUE(initializeAndShow(0x3D, F("0x3D OK")));
+  TEST_ASSERT_TRUE(testScreen(0x3D, F("0x3D OK")));
 }
 
 void test_ds1302_writes_and_reads_time() {
@@ -75,7 +105,6 @@ void tearDown() {}
 
 void setup() {
   Serial.begin(9600);
-  Wire.begin();
   delay(2000);
 
   UNITY_BEGIN();

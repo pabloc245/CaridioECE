@@ -59,7 +59,6 @@ public:
                      layout == STACKED ? ph * 2 : ph),
         _pw(pw), _ph(ph), _layout(layout),
         _clkDuring(clkDuring), _clkAfter(clkAfter), _seq(sequential) {
-          
     _wire[0] = wire0 ? wire0 : &Wire;
     _wire[1] = wire1 ? wire1 : &Wire;
     _rst[0] = rst0;
@@ -72,87 +71,140 @@ public:
   }
 
   /**
-   * Alloue le buffer, initialise les bus, fait le reset et configure
-   * les deux contrôleurs.
+   * Alloue le buffer, initialise les bus, fait le reset, vérifie que chaque
+   * panneau répond, puis envoie l'init dans le même découpage qu'Adafruit :
+   * petites transmissions (une liste de commandes, puis les commandes à
+   * argument une par une).
+   *
    * @param vcs          DUALSSD1306_SWITCHCAPVCC (cas courant) ou _EXTERNALVCC
    * @param addr0/addr1  adresses I2C 7 bits (ex. 0x3C et 0x3D)
    * @param reset        pulse sur les broches reset si définies
-   * @param periphBegin  appeler Wire.begin() ici ; mettre false si tu l'as
-   *                     déjà fait (ex. Wire.begin(SDA, SCL) sur ESP32)
-   * @return false si allocation impossible, config invalide ou panneau muet
+   * @param periphBegin  appeler Wire.begin() ici ; false si déjà fait
+   * @return true si tout est OK. Sinon false : printStatus(Serial) dit
+   *         quelle étape a échoué, sur quel panneau, avec quel code I2C.
+   *
+   * Après un échec, le buffer alloué par CET appel est libéré : on peut
+   * corriger et rappeler begin().
    */
   bool begin(uint8_t vcs, uint8_t addr0, uint8_t addr1,
              bool reset = true, bool periphBegin = true) {
-    if (_layout != MIRROR && _wire[0] == _wire[1] && addr0 == addr1)
-      return false;  // deux panneaux distincts ne peuvent pas partager bus+adresse
-    if (_layout == STACKED && (_ph & 7)) return false;  // pages de 8 lignes
+    _fail = FAIL_NONE;
+    _failPanel = -1;
+    _initStep = 0;
+    _i2c = 0;
 
-    if (!_buf) {
+    // 1. Validation : rien n'est alloué ni envoyé si la config est invalide
+    if (!validAddr(addr0)) return fail(FAIL_ARGS, 0);
+    if (!validAddr(addr1)) return fail(FAIL_ARGS, 1);
+    const bool sameDevice = (_wire[0] == _wire[1]) && (addr0 == addr1);
+    if (sameDevice && _layout != MIRROR) return fail(FAIL_ARGS);
+
+    const bool ext = (vcs == DUALSSD1306_EXTERNALVCC);
+    uint8_t comPins = 0;
+    if (!modelParams(ext, comPins, _contrast)) return fail(FAIL_SIZE);
+
+    // 2. Mémoire
+    const bool allocHere = (_buf == nullptr);
+    if (allocHere) {
       _buf = (uint8_t *)calloc(bufBytes(), 1);
-      if (!_buf) {
-        Serial.println(F("DualSSD1306 : allocation du buffer impossible"));
-        return false;
-      }
+      if (!_buf) return fail(FAIL_ALLOC);
     }
 
     _vcs = vcs;
     _addr[0] = addr0;
     _addr[1] = addr1;
+    const uint8_t nPanels = sameDevice ? 1 : 2;  // MIRROR sur un seul périphérique
 
+    // 3. Bus et reset
     if (periphBegin) {
       _wire[0]->begin();
       if (_wire[1] != _wire[0]) _wire[1]->begin();
     }
-
     if (reset) {
       resetPin(_rst[0]);
       if (_rst[1] != _rst[0]) resetPin(_rst[1]);  // broche partagée : un seul pulse
     }
 
-    // Valeurs dépendant du modèle
-    uint8_t comPins = 0x02;
-    _contrast = 0x8F;
-    const bool ext = (vcs == DUALSSD1306_EXTERNALVCC);
-    if (_pw == 128 && _ph == 64) {
-      comPins = 0x12;
-      _contrast = ext ? 0x9F : 0xCF;
-    } else if (_pw == 96 && _ph == 16) {
-      comPins = 0x02;
-      _contrast = ext ? 0x10 : 0xAF;
-    } else if (_pw == 64 && _ph == 32) {
-      comPins = 0x12;
-      _contrast = ext ? 0x10 : 0xCF;
-    }  // 128x32 : valeurs par défaut ci-dessus
-
-    const uint8_t seq[] = {
-        CMD_DISPLAY_OFF,
-        CMD_CLOCK_DIV,     0x80,
-        CMD_MULTIPLEX,     (uint8_t)(_ph - 1),
-        CMD_DISPLAY_OFFSET, 0x00,
-        CMD_START_LINE,
-        CMD_CHARGE_PUMP,   (uint8_t)(ext ? 0x10 : 0x14),
-        CMD_MEMORY_MODE,   0x00,                 // adressage horizontal
-        (uint8_t)(CMD_SEG_REMAP | 0x01),
-        CMD_COM_SCAN_DEC,
-        CMD_COM_PINS,      comPins,
-        CMD_CONTRAST,      _contrast,
-        CMD_PRECHARGE,     (uint8_t)(ext ? 0x22 : 0xF1),
-        CMD_VCOM_DETECT,   0x40,
-        CMD_ALL_ON_RESUME,
-        CMD_NORMAL,
-        CMD_SCROLL_OFF,
-        CMD_DISPLAY_ON};
-
-    bool ok = true;
-    for (uint8_t i = 0; i < 2; i++) {
-      if (_layout == MIRROR && i == 1 &&
-          _wire[0] == _wire[1] && _addr[0] == _addr[1])
-        break;  // même périphérique, déjà initialisé
-      clockStart(i);
-      ok &= sendCommands(i, seq, sizeof(seq));
-      clockEnd(i);
+    // 4. Chaque panneau acquitte-t-il son adresse ?
+    for (uint8_t i = 0; i < nPanels; i++) {
+      const uint8_t st = ping(i);
+      if (st) {
+        _i2c = st;
+        return fail(FAIL_PROBE, i, allocHere);
+      }
     }
-    return ok;
+
+    // 5. Init. Chaque entrée = [nombre d'octets, octets...] = UNE transmission
+    //    I2C, exactement comme Adafruit_SSD1306::begin().
+    const uint8_t plan[] = {
+        4, CMD_DISPLAY_OFF, CMD_CLOCK_DIV, 0x80, CMD_MULTIPLEX,
+        1, (uint8_t)(_ph - 1),
+        4, CMD_DISPLAY_OFFSET, 0x00, CMD_START_LINE, CMD_CHARGE_PUMP,
+        1, (uint8_t)(ext ? 0x10 : 0x14),
+        4, CMD_MEMORY_MODE, 0x00, (uint8_t)(CMD_SEG_REMAP | 0x01), CMD_COM_SCAN_DEC,
+        1, CMD_COM_PINS,
+        1, comPins,
+        1, CMD_CONTRAST,
+        1, _contrast,
+        1, CMD_PRECHARGE,
+        1, (uint8_t)(ext ? 0x22 : 0xF1),
+        6, CMD_VCOM_DETECT, 0x40, CMD_ALL_ON_RESUME, CMD_NORMAL, CMD_SCROLL_OFF,
+           CMD_DISPLAY_ON};
+
+    for (uint8_t i = 0; i < nPanels; i++) {
+      bool ok = true;
+      uint8_t k = 0;  // numéro de la transmission en cours
+      clockStart(i);
+      for (const uint8_t *q = plan; ok && q < plan + sizeof(plan);) {
+        const uint8_t n = *q++;
+        ++k;
+        ok = sendCommands(i, q, n);
+        q += n;
+      }
+      clockEnd(i);  // horloge restaurée même en cas d'échec
+      if (!ok) {
+        _initStep = k;
+        return fail(FAIL_INIT, i, allocHere);
+      }
+    }
+    return true;
+  }
+
+  // ---- Diagnostic après un begin() qui a renvoyé false -------------------
+
+  /// Dernier code d'erreur Wire non nul (endTransmission) :
+  /// 1 trop long, 2 NACK adresse, 3 NACK donnée, 4 autre, 5 timeout.
+  uint8_t i2cStatus() const { return _i2c; }
+
+  /// Panneau concerné (0 ou 1), -1 si non applicable.
+  int8_t failedPanel() const { return _failPanel; }
+
+  /// Numéro de la transmission d'init qui a échoué (1..12), 0 si autre cause.
+  uint8_t failedInitStep() const { return _initStep; }
+
+  /// Affiche la cause de l'échec, ex. printStatus(Serial).
+  void printStatus(Print &out) const {
+    out.print(F("DualSSD1306 begin: "));
+    switch (_fail) {
+      case FAIL_NONE:  out.print(F("OK")); break;
+      case FAIL_ARGS:  out.print(F("config invalide (adresse, ou meme bus+adresse)")); break;
+      case FAIL_SIZE:  out.print(F("taille de panneau non geree")); break;
+      case FAIL_ALLOC: out.print(F("RAM insuffisante pour le buffer")); break;
+      case FAIL_PROBE: out.print(F("pas d'ACK a l'adresse")); break;
+      case FAIL_INIT:
+        out.print(F("echec de l'init, transmission n."));
+        out.print(_initStep);
+        break;
+    }
+    if (_failPanel >= 0) {
+      out.print(F(" panneau "));
+      out.print(_failPanel);
+    }
+    if (_i2c) {
+      out.print(F(" I2C="));
+      out.print(_i2c);
+    }
+    out.println();
   }
 
   // ---- Dessin ------------------------------------------------------------
@@ -317,6 +369,46 @@ private:
     CMD_SCROLL_OFF    = 0x2E
   };
 
+  enum : uint8_t {
+    FAIL_NONE = 0, FAIL_ARGS, FAIL_SIZE, FAIL_ALLOC, FAIL_PROBE, FAIL_INIT
+  };
+
+  // Point de sortie unique des erreurs de begin() : mémorise la cause et
+  // libère le buffer si c'est begin() qui vient de l'allouer.
+  bool fail(uint8_t code, int8_t panel = -1, bool freeBuf = false) {
+    if (freeBuf && _buf) {
+      free(_buf);
+      _buf = nullptr;
+    }
+    _fail = code;
+    _failPanel = panel;
+    return false;
+  }
+
+  static bool validAddr(uint8_t a) { return a >= 0x08 && a <= 0x77; }
+
+  // Paquet vide : renvoie 0 si le panneau acquitte son adresse.
+  uint8_t ping(uint8_t i) {
+    _wire[i]->beginTransmission(_addr[i]);
+    return _wire[i]->endTransmission();
+  }
+
+  // comPins et contraste selon le modèle ; false si taille inconnue.
+  bool modelParams(bool ext, uint8_t &comPins, uint8_t &contrast) const {
+    if (_pw == 128 && _ph == 64) {
+      comPins = 0x12; contrast = ext ? 0x9F : 0xCF;
+    } else if (_pw == 128 && _ph == 32) {
+      comPins = 0x02; contrast = 0x8F;
+    } else if (_pw == 96 && _ph == 16) {
+      comPins = 0x02; contrast = ext ? 0x10 : 0xAF;
+    } else if (_pw == 64 && _ph == 32) {
+      comPins = 0x12; contrast = ext ? 0x10 : 0xCF;
+    } else {
+      return false;
+    }
+    return true;
+  }
+
   uint16_t stride() const { return _seq ? _pw : WIDTH; }
   size_t bufBytes() const {
     return (size_t)stride() * (((_seq ? _ph : HEIGHT) + 7) / 8);
@@ -336,36 +428,36 @@ private:
   void clockEnd(uint8_t i)   { _wire[i]->setClock(_clkAfter); }
 
   // Envoie n octets de commande (préfixe 0x00), découpés selon la taille du
-  // buffer Wire.
+  // buffer Wire. S'arrête à la première erreur et mémorise son code.
   bool sendCommands(uint8_t i, const uint8_t *c, uint8_t n) {
     TwoWire *w = _wire[i];
-    bool ok = true;
     while (n) {
       uint8_t chunk = (n > DUALSSD1306_WIRE_MAX - 1) ? DUALSSD1306_WIRE_MAX - 1 : n;
       w->beginTransmission(_addr[i]);
       w->write((uint8_t)0x00);
       w->write(c, chunk);
-      ok &= (w->endTransmission() == 0);
+      const uint8_t st = w->endTransmission();
+      if (st) { _i2c = st; return false; }
       c += chunk;
       n -= chunk;
     }
-    return ok;
+    return true;
   }
 
-  // Envoie n octets de données GDDRAM (préfixe 0x40).
+  // Envoie n octets de données GDDRAM (préfixe 0x40), même principe.
   bool sendData(uint8_t i, const uint8_t *d, uint16_t n) {
     TwoWire *w = _wire[i];
-    bool ok = true;
     while (n) {
       uint8_t chunk = (n > DUALSSD1306_WIRE_MAX - 1) ? DUALSSD1306_WIRE_MAX - 1 : n;
       w->beginTransmission(_addr[i]);
       w->write((uint8_t)0x40);
       w->write(d, chunk);
-      ok &= (w->endTransmission() == 0);
+      const uint8_t st = w->endTransmission();
+      if (st) { _i2c = st; return false; }
       d += chunk;
       n -= chunk;
     }
-    return ok;
+    return true;
   }
 
   void sendBoth(uint8_t c) {
@@ -394,4 +486,8 @@ private:
   uint8_t *_buf = nullptr;
   uint8_t _vcs = DUALSSD1306_SWITCHCAPVCC;
   uint8_t _contrast = 0x8F;
+  uint8_t _fail = FAIL_NONE;
+  int8_t _failPanel = -1;
+  uint8_t _initStep = 0;
+  uint8_t _i2c = 0;
 };
