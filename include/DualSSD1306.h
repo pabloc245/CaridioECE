@@ -89,7 +89,10 @@ public:
 
     if (!_buf) {
       _buf = (uint8_t *)calloc(bufBytes(), 1);
-      if (!_buf) return false;
+      if (!_buf) {
+        Serial.println(F("DualSSD1306 : allocation du buffer impossible"));
+        return false;
+      }
     }
 
     _vcs = vcs;

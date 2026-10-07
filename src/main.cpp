@@ -1,13 +1,21 @@
 #include <Arduino.h>
 #include <DualSSD1306.h>
-#include <Adafruit_GFX.h>
+#include <ThreeWire.h>
+#include <RtcDS1302.h>
+#include <PulseGraph.h>
 
-#define WIDTH 128
-#define HEIGHT 64
- 
-//  Variables
-int pulsePin = 0;                         // Pulse Sensor S (signal) wire connected to analog pin 0
-int blinkPin = 13;                        // pin to blink led at each beat
+constexpr uint8_t WIDTH = 128;
+constexpr uint8_t HEIGHT = 64;
+constexpr uint8_t GRAPH_SAMPLE_COUNT = 120;
+constexpr uint8_t GRAPH_SAMPLE_INTERVAL_TICKS = 10;  // 20 ms at a 2 ms ISR rate
+constexpr uint16_t DISPLAY_INTERVAL_MS = 250;
+constexpr uint16_t CLOCK_INTERVAL_MS = 1000;
+
+constexpr uint8_t pulsePin = A0;
+constexpr uint8_t blinkPin = 13;
+constexpr uint8_t RTC_IO_PIN = 7;
+constexpr uint8_t RTC_SCLK_PIN = 6;
+constexpr uint8_t RTC_CE_PIN = 8;
 
 // Volatile Variables, used in the interrupt service routine!
 volatile int BPM;                         // int that holds raw Analog in 0. updated every 2mS
@@ -24,6 +32,10 @@ volatile int thresh = 525;                // used to find instant moment of hear
 volatile int amp = 100;                   // used to hold amplitude of pulse waveform, seeded
 volatile boolean firstBeat = true;        // used to seed rate array so we startup with reasonable BPM
 volatile boolean secondBeat = false;      // used to seed rate array so we startup with reasonable BPM
+volatile uint8_t graphSamples[GRAPH_SAMPLE_COUNT];
+volatile uint8_t graphWriteIndex = 0;
+volatile uint8_t graphStoredCount = 0;
+volatile uint8_t graphSampleDivider = 0;
 
 void interruptSetup()
 {     
@@ -34,43 +46,185 @@ void interruptSetup()
   TIMSK2 = 0x02;     // ENABLE INTERRUPT ON MATCH BETWEEN TIMER2 AND OCR2A
   sei();             // MAKE SURE GLOBAL INTERRUPTS ARE ENABLED      
 } 
+ThreeWire rtcWire(RTC_IO_PIN, RTC_SCLK_PIN, RTC_CE_PIN);
+RtcDS1302<ThreeWire> rtc(rtcWire);
 DualSSD1306 oled(WIDTH, HEIGHT, DualSSD1306::SIDE_BY_SIDE, &Wire, &Wire,
                  -1, -1, 400000UL, 100000UL, true);
 
+uint8_t graphSnapshot[GRAPH_SAMPLE_COUNT];
+uint8_t graphSnapshotCount = 0;
+uint8_t graphSnapshotWriteIndex = 0;
+RtcDateTime displayTime(2026, 1, 1, 12, 0, 0);
+int displayBpm = 0;
+
+void printTwoDigits(uint8_t value) {
+  if (value < 10) oled.print('0');
+  oled.print(value);
+}
+
+void snapshotGraph() {
+  noInterrupts();
+  graphSnapshotCount = graphStoredCount;
+  graphSnapshotWriteIndex = graphWriteIndex;
+  for (uint8_t i = 0; i < GRAPH_SAMPLE_COUNT; ++i) {
+    graphSnapshot[i] = graphSamples[i];
+  }
+  interrupts();
+}
+
+void drawClockAndBpm() {
+  oled.setTextColor(DUALSSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(3, 2);
+  oled.print(F("HEURE"));
+
+  oled.setTextSize(2);
+  oled.setCursor(2, 14);
+  printTwoDigits(displayTime.Hour());
+  oled.print(':');
+  printTwoDigits(displayTime.Minute());
+  oled.print(':');
+  printTwoDigits(displayTime.Second());
+
+  oled.setTextSize(1);
+  oled.setCursor(3, 36);
+  printTwoDigits(displayTime.Day());
+  oled.print('/');
+  printTwoDigits(displayTime.Month());
+  oled.print('/');
+  oled.print(displayTime.Year());
+
+  oled.setCursor(3, 53);
+  oled.print(F("BPM"));
+  oled.setTextSize(2);
+  oled.setCursor(34, 46);
+  oled.print(displayBpm);
+  oled.setTextSize(1);
+  oled.setCursor(83, 53);
+  oled.print(F("bpm"));
+}
+
+void drawPulseGraph() {
+  constexpr int16_t graphWidth = GRAPH_SAMPLE_COUNT;
+  constexpr int16_t plotLeft = 132;
+  constexpr int16_t plotRight = plotLeft + graphWidth - 1;
+  constexpr int16_t plotTop = 19;
+  constexpr int16_t plotBottom = 59;
+
+  oled.setTextColor(DUALSSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(130, 2);
+  oled.print(F("POULS - 2.4s"));
+  oled.drawRect(129, 14, 126, 49, DUALSSD1306_WHITE);
+
+  for (int16_t x = plotLeft + 30; x < plotRight; x += 30) {
+    oled.drawFastVLine(x, plotTop, plotBottom - plotTop + 1, DUALSSD1306_WHITE);
+  }
+  for (int16_t y = plotTop + 10; y < plotBottom; y += 10) {
+    oled.drawFastHLine(plotLeft, y, graphWidth, DUALSSD1306_WHITE);
+  }
+
+  if (graphSnapshotCount == 0) {
+    oled.setCursor(138, 36);
+    oled.print(F("En attente"));
+    return;
+  }
+
+  uint8_t minimum = 255;
+  uint8_t maximum = 0;
+  const uint8_t oldest = pulseGraphOldestIndex(
+      GRAPH_SAMPLE_COUNT, graphSnapshotWriteIndex, graphSnapshotCount);
+  for (uint8_t i = 0; i < graphSnapshotCount; ++i) {
+    const uint8_t sample = graphSnapshot[(oldest + i) % GRAPH_SAMPLE_COUNT];
+    if (sample < minimum) minimum = sample;
+    if (sample > maximum) maximum = sample;
+  }
+
+  pulseGraphFitRange(minimum, maximum);
+
+  const int16_t firstX = plotLeft + graphWidth - graphSnapshotCount;
+  int16_t previousX = firstX;
+  int16_t previousY = pulseGraphMapY(
+      graphSnapshot[oldest], minimum, maximum, plotTop, plotBottom);
+
+  for (uint8_t i = 1; i < graphSnapshotCount; ++i) {
+    const int16_t x = firstX + i;
+    const uint8_t sample = graphSnapshot[(oldest + i) % GRAPH_SAMPLE_COUNT];
+    const int16_t y =
+        pulseGraphMapY(sample, minimum, maximum, plotTop, plotBottom);
+    oled.drawLine(previousX, previousY, x, y, DUALSSD1306_WHITE);
+    previousX = x;
+    previousY = y;
+  }
+}
+
+void drawScreens() {
+  drawClockAndBpm();
+  drawPulseGraph();
+}
 
 void setup()
 {
-  ///CAPTEUR
-  pinMode(blinkPin,OUTPUT);         
-  Serial.begin(115200);             
-  interruptSetup();                       // sets up to read Pulse Sensor signal every 2mS
+  pinMode(blinkPin, OUTPUT);
+  pinMode(pulsePin, INPUT);
+  Serial.begin(9600);
 
-  ///ECRAN
-  if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, 0x3C, 0x3D)) {
-    Serial.println(F("Init DualSSD1306 échouée (câblage, adresses, RAM ?)"));
-    for (;;) delay(1000);
-  }
+  rtc.Begin();
+  rtc.SetIsWriteProtected(false);
+  rtc.SetDateTime(RtcDateTime(2026, 1, 1, 12, 0, 0));
+  rtc.SetIsRunning(true);
+  displayTime = rtc.GetDateTime();
 
-  oled.setTextColor(DUALSSD1306_WHITE);
-  oled.setTextSize(2);
+  // if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, 0x3C, 0x3D)) {
+  //   Serial.println(F("Init DualSSD1306 échouée (câblage, adresses, RAM ?)"));
+  //   for (;;) delay(1000);
+  // }
+
+  interruptSetup();
 }
 
 void loop()
-{  
-  if (QS == true) // A Heartbeat Was Found
-    {     
-      // Quantified Self "QS" true when arduino finds a heartbeat
-      Serial.print("BPM: ");
-      Serial.println(BPM); 
-      QS = false; // reset the Quantified Self flag for next time    
+{
+  int bpmSnapshot;
+  bool beatDetected;
+  noInterrupts();
+  bpmSnapshot = BPM;
+  beatDetected = QS;
+  QS = false;
+  interrupts();
+
+  if (beatDetected) {
+    displayBpm = bpmSnapshot;
+    Serial.print(F("BPM: "));
+    Serial.println(displayBpm);
+  }
+
+  static unsigned long lastDisplayUpdate = 0;
+  const unsigned long now = millis();
+  if (now - lastDisplayUpdate >= DISPLAY_INTERVAL_MS) {
+    lastDisplayUpdate = now;
+    snapshotGraph();
+
+    static unsigned long lastClockUpdate = 0;
+    if (now - lastClockUpdate >= CLOCK_INTERVAL_MS) {
+      lastClockUpdate = now;
+      displayTime = rtc.GetDateTime();
     }
-  delay(20);
+
+    if (!oled.render(drawScreens)) {
+     // Serial.println(F("Erreur lors de l'affichage des écrans SSD1306"));
+    }
+  }
 }
 
 ISR(TIMER2_COMPA_vect) //triggered when Timer2 counts to 124
 {  
-  cli();                                      // disable interrupts while we do this
-  Signal = analogRead(pulsePin);              // read the Pulse Sensor 
+  Signal = analogRead(pulsePin);              // read the Pulse Sensor
+  if (++graphSampleDivider >= GRAPH_SAMPLE_INTERVAL_TICKS) {
+    graphSampleDivider = 0;
+    pulseGraphPushSample(graphSamples, GRAPH_SAMPLE_COUNT, graphWriteIndex,
+                         graphStoredCount, (uint8_t)(Signal >> 2));
+  }
   sampleCounter += 2;                         // keep track of the time in mS with this variable
   int N = sampleCounter - lastBeatTime;       // monitor the time since the last beat to avoid noise
                                               // find the peak and trough of the pulse wave
@@ -110,8 +264,7 @@ ISR(TIMER2_COMPA_vect) //triggered when Timer2 counts to 124
         if(firstBeat) // if it's the first time we found a beat, if firstBeat == TRUE
         {                         
           firstBeat = false;                   // clear firstBeat flag
-          secondBeat = true;                   // set the second beat flag
-          sei();                               // enable interrupts again
+          secondBeat = true;                   // set the secondBeat flag
           return;                              // IBI value is unreliable so discard it
         }   
       // keep a running total of the last 10 IBI values
@@ -152,5 +305,4 @@ ISR(TIMER2_COMPA_vect) //triggered when Timer2 counts to 124
       secondBeat = false;                    // when we get the heartbeat back
     }
 
-  sei();                                   // enable interrupts when youre done!
 }// end isr
