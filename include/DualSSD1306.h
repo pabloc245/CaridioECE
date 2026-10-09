@@ -134,20 +134,15 @@ public:
       }
     }
 
-    // 5. Init. Chaque entrée = [nombre d'octets, octets...] = UNE transmission
-    //    I2C, exactement comme Adafruit_SSD1306::begin().
+    // 5. Init. Keep each command and its arguments in the same I2C transfer.
     const uint8_t plan[] = {
-        4, CMD_DISPLAY_OFF, CMD_CLOCK_DIV, 0x80, CMD_MULTIPLEX,
-        1, (uint8_t)(_ph - 1),
-        4, CMD_DISPLAY_OFFSET, 0x00, CMD_START_LINE, CMD_CHARGE_PUMP,
-        1, (uint8_t)(ext ? 0x10 : 0x14),
+        5, CMD_DISPLAY_OFF, CMD_CLOCK_DIV, 0x80, CMD_MULTIPLEX, (uint8_t)(_ph - 1),
+        5, CMD_DISPLAY_OFFSET, 0x00, CMD_START_LINE, CMD_CHARGE_PUMP,
+           (uint8_t)(ext ? 0x10 : 0x14),
         4, CMD_MEMORY_MODE, 0x00, (uint8_t)(CMD_SEG_REMAP | 0x01), CMD_COM_SCAN_DEC,
-        1, CMD_COM_PINS,
-        1, comPins,
-        1, CMD_CONTRAST,
-        1, _contrast,
-        1, CMD_PRECHARGE,
-        1, (uint8_t)(ext ? 0x22 : 0xF1),
+        2, CMD_COM_PINS, comPins,
+        2, CMD_CONTRAST, _contrast,
+        2, CMD_PRECHARGE, (uint8_t)(ext ? 0x22 : 0xF1),
         6, CMD_VCOM_DETECT, 0x40, CMD_ALL_ON_RESUME, CMD_NORMAL, CMD_SCROLL_OFF,
            CMD_DISPLAY_ON};
 
@@ -170,7 +165,6 @@ public:
     return true;
   }
 
-  // ---- Diagnostic après un begin() qui a renvoyé false -------------------
 
   /// Dernier code d'erreur Wire non nul (endTransmission) :
   /// 1 trop long, 2 NACK adresse, 3 NACK donnée, 4 autre, 5 timeout.
@@ -179,7 +173,7 @@ public:
   /// Panneau concerné (0 ou 1), -1 si non applicable.
   int8_t failedPanel() const { return _failPanel; }
 
-  /// Numéro de la transmission d'init qui a échoué (1..12), 0 si autre cause.
+  /// Numéro de la transmission d'init qui a échoué (1..7), 0 si autre cause.
   uint8_t failedInitStep() const { return _initStep; }
 
   /// Affiche la cause de l'échec, ex. printStatus(Serial).

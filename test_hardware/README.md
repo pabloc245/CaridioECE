@@ -15,8 +15,10 @@ The tests run in this order:
 
 RTC pins are `IO=D7`, `SCLK=D6`, and `CE=D8`.
 
-Each OLED test first uses `DualSSD1306`. If that attempt fails and
-`Adafruit_SSD1306.h` is available, it retries with Adafruit's 64x32 driver.
-The `DualSSD1306` initialization failure details are printed to Serial.
+Each OLED test uses a 128x64 panel size. It first tries `DualSSD1306`. If that
+attempt fails and `Adafruit_SSD1306.h` is available, it retries with Adafruit's
+128x64 driver.
+On failure, Unity reports the OLED address and the `DualSSD1306` failure
+details (panel, init step, and I2C status) in the test result.
 The DualSSD1306 instance is destroyed before the fallback display is created,
 so the two display buffers are never allocated at the same time.

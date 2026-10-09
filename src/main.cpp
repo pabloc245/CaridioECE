@@ -26,9 +26,9 @@ volatile boolean QS = false;              // becomes true when Arduoino finds a 
 volatile int rate[10];                    // array to hold last ten IBI values
 volatile unsigned long sampleCounter = 0; // used to determine pulse timing
 volatile unsigned long lastBeatTime = 0;  // used to find IBI
-volatile int P = 512;                     // used to find peak in pulse wave, seeded
-volatile int T = 512;                     // used to find trough in pulse wave, seeded
-volatile int thresh = 525;                // used to find instant moment of heart beat, seeded
+volatile int P = 612;                     // used to find peak in pulse wave, seeded
+volatile int T = 612;                     // used to find trough in pulse wave, seeded
+volatile int thresh = 625;                // used to find instant moment of heart beat, seeded
 volatile int amp = 100;                   // used to hold amplitude of pulse waveform, seeded
 volatile boolean firstBeat = true;        // used to seed rate array so we startup with reasonable BPM
 volatile boolean secondBeat = false;      // used to seed rate array so we startup with reasonable BPM
@@ -94,47 +94,58 @@ void drawClockAndBpm() {
   oled.print('/');
   oled.print(displayTime.Year());
 
-  oled.setCursor(3, 53);
-  oled.print(F("BPM"));
-  oled.setTextSize(2);
-  oled.setCursor(34, 46);
-  oled.print(displayBpm);
-  oled.setTextSize(1);
-  oled.setCursor(83, 53);
-  oled.print(F("bpm"));
+  // oled.setCursor(3, 53);
+  // oled.print(F("BPM"));
+  // oled.setTextSize(2);
+  // oled.setCursor(34, 46);
+  // oled.print(displayBpm);
+  // oled.setTextSize(1);
+  // oled.setCursor(83, 53);
+  // oled.print(F("bpm"));
 }
 
 void drawPulseGraph() {
-  constexpr int16_t graphWidth = GRAPH_SAMPLE_COUNT;
-  constexpr int16_t plotLeft = 132;
-  constexpr int16_t plotRight = plotLeft + graphWidth - 1;
-  constexpr int16_t plotTop = 19;
-  constexpr int16_t plotBottom = 59;
+  constexpr int16_t panelX = WIDTH;
+  constexpr int16_t frameX = panelX + 1;
+  constexpr int16_t frameY = 14;
+  constexpr int16_t frameWidth = WIDTH - 2;
+  constexpr int16_t frameHeight = 49;
+  constexpr int16_t plotInset = 3;
+  constexpr int16_t plotLeft = frameX + plotInset;
+  constexpr int16_t plotTop = frameY + 5;
+  constexpr int16_t plotWidth = frameWidth - 2 * plotInset;
+  constexpr int16_t plotHeight = frameHeight - 9;
+  constexpr int16_t plotBottom = plotTop + plotHeight - 1;
+  static_assert(GRAPH_SAMPLE_COUNT <= plotWidth,
+                "Graph sample count must fit within the plot width");
 
-  oled.setTextColor(DUALSSD1306_WHITE);
-  oled.setTextSize(1);
-  oled.setCursor(130, 2);
-  oled.print(F("POULS - 2.4s"));
-  oled.drawRect(129, 14, 126, 49, DUALSSD1306_WHITE);
+  // oled.setTextColor(DUALSSD1306_WHITE);
+  // oled.setTextSize(1);
+  // oled.setCursor(panelX + 2, 2);
+  // oled.print(F("POULS - 2.4s"));
+  // oled.drawRect(frameX, frameY, frameWidth, frameHeight, DUALSSD1306_WHITE);
 
-  for (int16_t x = plotLeft + 30; x < plotRight; x += 30) {
-    oled.drawFastVLine(x, plotTop, plotBottom - plotTop + 1, DUALSSD1306_WHITE);
+  for (int16_t x = plotLeft + 30; x < plotLeft + plotWidth; x += 30) {
+    //oled.drawFastVLine(x, plotTop, plotBottom - plotTop + 1, DUALSSD1306_WHITE);
   }
-  for (int16_t y = plotTop + 10; y < plotBottom; y += 10) {
-    oled.drawFastHLine(plotLeft, y, graphWidth, DUALSSD1306_WHITE);
+  for (int16_t y = plotTop + 10; y < plotTop + plotHeight; y += 10) {
+    //oled.drawFastHLine(plotLeft, y, plotWidth, DUALSSD1306_WHITE);
   }
 
-  if (graphSnapshotCount == 0) {
-    oled.setCursor(138, 36);
-    oled.print(F("En attente"));
+  const uint8_t sampleCount =
+      graphSnapshotCount < GRAPH_SAMPLE_COUNT ? graphSnapshotCount
+                                              : GRAPH_SAMPLE_COUNT;
+  if (sampleCount == 0) {
+    //oled.setCursor(panelX + 10, 36);
+    //oled.print(F("En attente"));
     return;
   }
 
   uint8_t minimum = 255;
   uint8_t maximum = 0;
   const uint8_t oldest = pulseGraphOldestIndex(
-      GRAPH_SAMPLE_COUNT, graphSnapshotWriteIndex, graphSnapshotCount);
-  for (uint8_t i = 0; i < graphSnapshotCount; ++i) {
+      GRAPH_SAMPLE_COUNT, graphSnapshotWriteIndex, sampleCount);
+  for (uint8_t i = 0; i < sampleCount; ++i) {
     const uint8_t sample = graphSnapshot[(oldest + i) % GRAPH_SAMPLE_COUNT];
     if (sample < minimum) minimum = sample;
     if (sample > maximum) maximum = sample;
@@ -142,17 +153,16 @@ void drawPulseGraph() {
 
   pulseGraphFitRange(minimum, maximum);
 
-  const int16_t firstX = plotLeft + graphWidth - graphSnapshotCount;
-  int16_t previousX = firstX;
+  int16_t previousX = pulseGraphMapX(0, sampleCount, plotLeft, plotWidth);
   int16_t previousY = pulseGraphMapY(
       graphSnapshot[oldest], minimum, maximum, plotTop, plotBottom);
 
-  for (uint8_t i = 1; i < graphSnapshotCount; ++i) {
-    const int16_t x = firstX + i;
+  for (uint8_t i = 1; i < sampleCount; ++i) {
+    const int16_t x = pulseGraphMapX(i, sampleCount, plotLeft, plotWidth);
     const uint8_t sample = graphSnapshot[(oldest + i) % GRAPH_SAMPLE_COUNT];
     const int16_t y =
         pulseGraphMapY(sample, minimum, maximum, plotTop, plotBottom);
-    oled.drawLine(previousX, previousY, x, y, DUALSSD1306_WHITE);
+    //oled.drawLine(previousX, previousY, x, y, DUALSSD1306_WHITE);
     previousX = x;
     previousY = y;
   }
