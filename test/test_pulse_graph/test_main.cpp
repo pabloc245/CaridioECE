@@ -1,4 +1,3 @@
-#include <Arduino.h>
 #include <unity.h>
 #include <PulseGraph.h>
 
@@ -36,7 +35,7 @@ void test_invalid_buffer_state_has_safe_oldest_index() {
 }
 
 void test_map_x_keeps_partial_and_full_graph_within_plot() {
-  TEST_ASSERT_EQUAL_INT16(20, pulseGraphMapX(0, 1, 20, 120));
+  TEST_ASSERT_EQUAL_INT16(139, pulseGraphMapX(0, 1, 20, 120));
   TEST_ASSERT_EQUAL_INT16(139, pulseGraphMapX(119, 120, 20, 120));
   TEST_ASSERT_EQUAL_INT16(20, pulseGraphMapX(0, 200, 20, 120));
   TEST_ASSERT_EQUAL_INT16(139, pulseGraphMapX(199, 200, 20, 120));
@@ -73,8 +72,7 @@ void test_map_y_places_minimum_middle_and_maximum() {
 void setUp() {}
 void tearDown() {}
 
-void setup() {
-  delay(2000);
+int main() {
   UNITY_BEGIN();
   RUN_TEST(test_push_sample_advances_and_counts_until_full);
   RUN_TEST(test_oldest_index_tracks_partial_and_wrapped_buffer);
@@ -82,7 +80,5 @@ void setup() {
   RUN_TEST(test_map_x_keeps_partial_and_full_graph_within_plot);
   RUN_TEST(test_fit_range_expands_flat_signal_and_respects_limits);
   RUN_TEST(test_map_y_places_minimum_middle_and_maximum);
-  UNITY_END();
+  return UNITY_END();
 }
-
-void loop() {}

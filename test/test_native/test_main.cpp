@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Wire.h>
 
