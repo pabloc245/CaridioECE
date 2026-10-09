@@ -27,11 +27,6 @@ DualSSD1306 oled(128, 64, DualSSD1306::SIDE_BY_SIDE, &Wire, &Wire,
 uint16_t counter = 0;  // état de l'animation : modifié hors de dessine()
 uint8_t level = 0;
 
-bool present(uint8_t addr) {
-  Wire.beginTransmission(addr);
-  return Wire.endTransmission() == 0;
-}
-
 // Écran logique 256x64 : x 0..127 = écran gauche, x 128..255 = écran droit.
 // Doit donner le même résultat à chaque appel (appelée une fois par écran
 // en mode séquentiel).
@@ -60,17 +55,11 @@ void dessine() {
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();  // fait ici pour pouvoir tester les adresses avant begin()
 
-  Serial.print(F("0x3C : "));
-  Serial.println(present(ADDR_LEFT) ? F("OK") : F("absent"));
-  Serial.print(F("0x3D : "));
-  Serial.println(present(ADDR_RIGHT) ? F("OK") : F("absent"));
-
-  // periphBegin = false : Wire.begin() déjà appelé ci-dessus
-  if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, ADDR_LEFT, ADDR_RIGHT,
-                  true, false)) {
-    Serial.println(F("Init echouee : voir les adresses ci-dessus"));
+  // Wire.begin() est fait par begin(). En cas de panneau muet, printStatus()
+  // dit lequel (adresse non acquittee) : verifier cablage et adresses.
+  if (!oled.begin(DUALSSD1306_SWITCHCAPVCC, ADDR_LEFT, ADDR_RIGHT)) {
+    oled.printStatus(Serial);  // etape en cause, panneau, code I2C
     for (;;) delay(1000);
   }
 }
