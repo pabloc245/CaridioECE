@@ -1,11 +1,29 @@
 
-This directory is intended for PlatformIO Test Runner and project tests.
+Tests are grouped under `FS1` through `FS6` to match the requirements. PlatformIO
+test-suite directories inside each group start with `test_`, for example:
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+```text
+test/FS3/test_leds/test_main.cpp
+```
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+List available suites with `pio test -e nanoatmega328new --list-tests`.
+Hardware suites are real diagnostic firmware: run only when ready to flash the
+Nano, connect the required components, and observe the outputs. For example,
+`pio test -e nanoatmega328new -f FS3/test_leds` runs the LED color walk.
+
+| Group | Test suites | Main coverage |
+|---|---|---|
+| FS1 | `test_pulse_detector`, `test_sensor` | PPG peak detection, noisy/slow/fast signals, analog WPSE340 signal |
+| FS2 | `test_rtc` | RTC validity, calendar fields and advancing seconds |
+| FS3 | `test_heart_rate_indicators`, `test_leds` | BPM classification and one-at-a-time physical LED color check |
+| FS4 | `test_heartbeat_audio`, `test_buzzer` | Tone selection, simulated beat cadence and physical D2 mute/re-enable |
+| FS5 | `test_pulse_graph`, `test_pulse_graph_zoom`, `test_displays` | Graph ring buffer/scaling, seconds/zoom calculations, both OLEDs and encoder |
+| FS6 | `test_measurement_store`, `test_eeprom_hardware` | EEPROM persistence logic, averaging, recovery and device capacity |
+
+See [FS_TEST_PLAN.md](FS_TEST_PLAN.md) for requirement-by-requirement test
+coverage and the physical procedures needed for requirements that cannot be
+proven by unit tests alone.
+
+Host-only suites use Unity and can be compiled with a host C++11 compiler. They
+must be run separately from the hardware suites; see the test plan for the
+current host command.
